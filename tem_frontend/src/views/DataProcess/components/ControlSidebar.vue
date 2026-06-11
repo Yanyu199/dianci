@@ -1,7 +1,7 @@
 <template>
   <div class="sidebar-container">
     <el-collapse v-model="activePanels" class="custom-collapse">
-      <el-collapse-item title="请输入X分量参数" name="x-params">
+      <el-collapse-item title="请输入X/Y分量参数及数据" name="x-params">
         <div class="panel-content">
           <div class="section-title">工程参数</div>
 
@@ -15,7 +15,7 @@
           <el-form :model="form" label-width="100px" label-position="right" class="parameter-form">
             <div class="form-grid">
               <div class="grid-column">
-                <el-form-item label="发射边长">
+                <el-form-item :label="txEdgeLabel">
                   <el-input v-model="form.txEdge" />
                 </el-form-item>
                 <el-form-item label="接收面积">
@@ -45,9 +45,25 @@
               </div>
             </div>
 
+            <div class="section-title" style="margin-top: 10px">数据文件</div>
+            <el-form-item label="X分量文件">
+              <input
+                type="file"
+                accept=".txt,.dat,.csv"
+                @change="(e) => (fileX = (e.target as HTMLInputElement).files?.[0] || null)"
+              />
+            </el-form-item>
+            <el-form-item label="Y分量文件">
+              <input
+                type="file"
+                accept=".txt,.dat,.csv"
+                @change="(e) => (fileY = (e.target as HTMLInputElement).files?.[0] || null)"
+              />
+            </el-form-item>
+
             <div class="form-actions">
-              <el-button type="primary" @click="handleConfirm">确定</el-button>
-              <el-button @click="handleCancel">取消</el-button>
+              <el-button type="primary" @click="handleConfirm">生成处理</el-button>
+              <el-button @click="handleCancel">重置参数</el-button>
             </div>
           </el-form>
         </div>
@@ -57,42 +73,53 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
+import { ref, reactive, computed } from 'vue'
+import { ElMessage } from 'element-plus'
 
-// 控制折叠面板初始状态：默认完全展开 'x-params'
+const emit = defineEmits(['submit', 'toggle-view'])
 const activePanels = ref(['x-params'])
 
-// 截图对应的精准默认值数据结构
+const fileX = ref<File | null>(null)
+const fileY = ref<File | null>(null)
+
 const defaultValues = {
-  dataType: 'borehole', // 默认选中"钻孔瞬变数据"
-  txEdge: '2', // 发射边长默认值
-  rxArea: '450', // 接收面积默认值
-  medium: 'other', // 工作点介质默认选中 "其 他"
-  turns: '10', // 线圈匝数默认值
-  channels: '100', // 测道数目默认值
-  lineNo: 1 // 线 号默认选中 1
+  dataType: 'borehole',
+  txEdge: '2',
+  rxArea: '450',
+  medium: 'other',
+  turns: '10',
+  channels: '100',
+  lineNo: 1
 }
 
-// 响应式表单状态对象
 const form = reactive({ ...defaultValues })
 
-// matrimonial组件核心交互事件：
-// 1. 确定按钮：将当前完整的表单数据格式化打印到控制台
+// 动态计算 Label：如果是矿井则是边长，钻孔则是直径
+const txEdgeLabel = computed(() => {
+  return form.dataType === 'mine' ? '发射边长' : '发射直径'
+})
+
 const handleConfirm = () => {
-  console.log('--- 提交的X分量工程参数 ---', {
-    数据类型: form.dataType === 'mine' ? '矿井瞬变数据' : '钻孔瞬变数据',
-    发射边长: form.txEdge,
-    接收面积: form.rxArea,
-    工作点介质: form.medium === 'other' ? '其 他' : '煤层',
-    线圈匝数: form.turns,
-    测道数目: form.channels,
-    线号: form.lineNo
-  })
+  if (!fileX.value || !fileY.value) {
+    ElMessage.warning('请先选择X分量和Y分量的数据文件！')
+    return
+  }
+
+  // 3. 构建 FormData，触发父组件(XYComponent)真正的 API 请求
+  const formData = new FormData()
+  formData.append('fileX', fileX.value)
+  formData.append('fileY', fileY.value)
+  // 假设XY分量使用同一套物理参数
+  formData.append('paramsX', JSON.stringify(form))
+  formData.append('paramsY', JSON.stringify(form))
+
+  emit('submit', formData)
 }
 
-// 2. 取消按钮：无弹窗打扰，直接无缝重置表单字段为截图中的初始默认值
 const handleCancel = () => {
   Object.assign(form, defaultValues)
+  fileX.value = null
+  fileY.value = null
 }
 </script>
 

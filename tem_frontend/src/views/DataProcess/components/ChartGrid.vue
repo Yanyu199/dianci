@@ -39,9 +39,16 @@ const renderCharts = () => {
       grid: { left: '16%', right: '5%', bottom: '15%', top: '25%' },
       xAxis: { type: 'log', name: 't(ms)', axisLabel: { fontSize: 9 } },
       yAxis: {
-        type: 'log',
+        type: 'log', // 【非常重要：必须保持为 log，千万别改成 value】
         name: 'V(μV)',
-        axisLabel: { fontSize: 9 },
+        axisLabel: {
+          fontSize: 9,
+          // 在保留 log 轴的基础上，加上科学计数法格式化
+          formatter: function (value) {
+            if (!value) return '0'
+            return value.toExponential(2) // 保留两位小数的科学计数法，如 1.23e-5
+          }
+        },
         splitLine: { show: true, lineStyle: { type: 'dashed' } }
       },
       series: [
