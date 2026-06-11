@@ -1,85 +1,62 @@
-<script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
-import HelloWorld from './components/HelloWorld.vue'
-</script>
-
 <template>
-  <header>
-    <img alt="Vue logo" class="logo" src="@/assets/logo.svg" width="125" height="125" />
+  <el-container class="app-container">
+    <el-header class="sys-header">
+      <div class="logo-title">
+        <span class="logo-icon">⚡</span>
+        TEM瞬变电磁数据处理系统
+      </div>
+      <el-menu
+        mode="horizontal"
+        :router="true"
+        default-active="/data-process/xy"
+        class="sys-menu"
+        :ellipsis="false"
+      >
+        <el-menu-item index="/data-process/xy">数据预处理 (X/Y)</el-menu-item>
+        <el-menu-item index="/about" disabled>反演计算 (开发中)</el-menu-item>
+        <el-menu-item index="/about" disabled>3D 成果展示 (开发中)</el-menu-item>
+      </el-menu>
+    </el-header>
 
-    <div class="wrapper">
-      <HelloWorld msg="You did it!" />
-
-      <nav>
-        <RouterLink to="/">Home</RouterLink>
-        <RouterLink to="/about">About</RouterLink>
-      </nav>
-    </div>
-  </header>
-
-  <RouterView />
+    <el-main class="sys-main"> <router-view /> </el-main>
+  </el-container>
 </template>
 
 <style scoped>
-header {
-  line-height: 1.5;
-  max-height: 100vh;
+.app-container {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
-.logo {
-  display: block;
-  margin: 0 auto 2rem;
+.sys-header {
+  background-color: #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  z-index: 10;
 }
 
-nav {
-  width: 100%;
-  font-size: 12px;
-  text-align: center;
-  margin-top: 2rem;
+.logo-title {
+  font-size: 20px;
+  font-weight: bold;
+  color: #2c3e50;
+  margin-right: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-nav a.router-link-exact-active {
-  color: var(--color-text);
+.sys-menu {
+  flex-grow: 1;
+  border-bottom: none !important;
 }
 
-nav a.router-link-exact-active:hover {
+.sys-main {
   background-color: transparent;
-}
-
-nav a {
-  display: inline-block;
-  padding: 0 1rem;
-  border-left: 1px solid var(--color-border);
-}
-
-nav a:first-of-type {
-  border: 0;
-}
-
-@media (min-width: 1024px) {
-  header {
-    display: flex;
-    place-items: center;
-    padding-right: calc(var(--section-gap) / 2);
-  }
-
-  .logo {
-    margin: 0 2rem 0 0;
-  }
-
-  header .wrapper {
-    display: flex;
-    place-items: flex-start;
-    flex-wrap: wrap;
-  }
-
-  nav {
-    text-align: left;
-    margin-left: -1rem;
-    font-size: 1rem;
-
-    padding: 1rem 0;
-    margin-top: 1rem;
-  }
+  padding: 20px;
+  height: calc(100vh - 60px);
+  overflow-y: auto;
 }
 </style>
