@@ -33,7 +33,7 @@ const renderCharts = () => {
     chartInstances.push(chart)
 
     const option = {
-      title: { text: `测点: ${i + 1}.00`, left: 'left', top: 5, textStyle: { fontSize: 12 } },
+      title: { text: `测点: ${i + 1}`, left: 'left', top: 5, textStyle: { fontSize: 12 } },
       tooltip: { trigger: 'axis' },
       legend: { right: 5, top: 5, itemWidth: 12, itemHeight: 8, textStyle: { fontSize: 10 } },
       grid: { left: '16%', right: '5%', bottom: '15%', top: '25%' },
@@ -44,7 +44,7 @@ const renderCharts = () => {
         axisLabel: {
           fontSize: 9,
           // 在保留 log 轴的基础上，加上科学计数法格式化
-          formatter: function (value) {
+          formatter: function (value: number) {
             if (!value) return '0'
             return value.toExponential(2) // 保留两位小数的科学计数法，如 1.23e-5
           }

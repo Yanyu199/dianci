@@ -83,12 +83,16 @@ async def upload_xy_data(
         content_x = await fileX.read()
         content_y = await fileY.read()
 
-        # 解析数据
         time_arr_x, x_series = parse_tem_file(content_x, param_dict_x)
         time_arr_y, y_series = parse_tem_file(content_y, param_dict_y)
 
-        # 统一时间轴
-        time_arr = time_arr_x if len(time_arr_x) > 0 else time_arr_y
+        # ========= 修改这里 =========
+        # 统一时间轴：谁长用谁的，防止短的数据截断长的数据
+        if len(time_arr_x) >= len(time_arr_y):
+            time_arr = time_arr_x
+        else:
+            time_arr = time_arr_y
+        # ==========================
 
         table_data = []
         for t_idx in range(len(time_arr)):
@@ -119,5 +123,5 @@ async def upload_xy_data(
 
 if __name__ == "__main__":
     import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # 注意这里把 app 换成了字符串 "main:app"，并加了 reload=True
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
