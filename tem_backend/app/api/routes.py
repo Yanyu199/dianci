@@ -1,7 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 import json
 from services.tem_parser import parse_tem_file  # 引入拆分出去的解析算法
-
+from app.services.inversion_engine import tem_engine
 router = APIRouter()
 
 @router.post("/upload_xy")
@@ -56,3 +56,24 @@ async def upload_xy_data(
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"数据计算及解析失败: {str(e)}")
+
+    @router.post("/tem/invert")
+    async def invert_tem_data(file: UploadFile = File(...)):
+        try:
+            # 1. 读取用户上传的文本
+            content = await file.read()
+            text = content.decode("utf-8")
+
+            # 2. 解析文本获取矩阵
+            data_matrix = tem_engine.parse_txt(text)
+
+            # 3. 极速批量反演
+            results = tem_engine.batch_invert(data_matrix)
+
+            return {
+                "status": "success",
+                "message": f"成功反演 {len(results)} 个测点数据",
+                "data": results
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}

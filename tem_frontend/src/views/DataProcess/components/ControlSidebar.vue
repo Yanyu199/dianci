@@ -105,14 +105,14 @@
               <input
                 type="file"
                 accept=".txt,.dat,.csv"
-                @change="(e) => (fileX = (e.target as HTMLInputElement).files?.[0] || null)"
+                @change="(e) => handleFileChange('X', e)"
               />
             </el-form-item>
             <el-form-item label="Y分量文件">
               <input
                 type="file"
                 accept=".txt,.dat,.csv"
-                @change="(e) => (fileY = (e.target as HTMLInputElement).files?.[0] || null)"
+                @change="(e) => handleFileChange('Y', e)"
               />
             </el-form-item>
 
@@ -155,6 +155,42 @@ const formY = reactive({ ...defaultValues })
 // 修改：分别计算对应标签
 const txEdgeLabelX = computed(() => (formX.dataType === 'mine' ? '发射边长' : '发射直径'))
 const txEdgeLabelY = computed(() => (formY.dataType === 'mine' ? '发射边长' : '发射直径'))
+
+const handleFileChange = (type: 'X' | 'Y', e: Event) => {
+  const target = e.target as HTMLInputElement
+  const file = target.files?.[0] || null
+
+  // 1. 将文件绑定到原有的 fileX 或 fileY 变量
+  if (type === 'X') {
+    fileX.value = file
+  } else {
+    fileY.value = file
+  }
+
+  // 2. 如果成功选择了文件，则利用 FileReader 分析数据行数
+  if (file) {
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      const text = event.target?.result as string
+      if (text) {
+        // 按换行符分割文本，并过滤掉空行
+        const lines = text.split(/\r\n|\n/).filter((line) => line.trim() !== '')
+
+        // 由于你的后端读取数据时有一行表头 (skip_header=1)，这里我们将总行数减 1 得到有效数据行数
+        const maxChannels = lines.length > 1 ? lines.length - 1 : 0
+
+        // 3. 将计算出的行数自动回填到表单中
+        if (type === 'X') {
+          formX.channels = maxChannels.toString()
+        } else {
+          formY.channels = maxChannels.toString()
+        }
+      }
+    }
+    // 读取文件内容为文本
+    reader.readAsText(file)
+  }
+}
 
 const handleConfirm = () => {
   if (!fileX.value || !fileY.value) {
