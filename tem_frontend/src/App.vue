@@ -14,7 +14,7 @@
       >
         <el-menu-item index="/data-process/xy">数据预处理 (X/Y)</el-menu-item>
         <el-menu-item index="/inversion">智能反演</el-menu-item>
-        <el-menu-item index="/about" disabled>3D 成果展示 (开发中)</el-menu-item>
+        <el-menu-item index="/3d-imaging">3D 成果展示</el-menu-item>
       </el-menu>
     </el-header>
 

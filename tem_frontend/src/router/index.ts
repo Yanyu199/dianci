@@ -26,6 +26,11 @@ const router = createRouter({
       path: '/inversion',
       name: 'inversion',
       component: () => import('../views/DataProcess/InversionView.vue')
+    },
+    {
+      path: '/3d-imaging',
+      name: '3dImaging',
+      component: () => import('../views/DataProcess/ThreeDView.vue')
     }
   ]
 })

@@ -24,3 +24,23 @@ export const invertTemData = async (file: File) => {
   })
   return response.data
 }
+// 新增：调用本地硬盘批量反演接口
+export const batchInvertLocal = async (inputDir: string, outputDir: string) => {
+  const response = await apiClient.post('/tem/batch_local', {
+    input_dir: inputDir,
+    output_dir: outputDir
+  })
+  return response.data
+}
+// 新增：调用 3D 成像接口
+export const generate3DModel = async (fileX: File, fileY: File, fileZ: File) => {
+  const formData = new FormData()
+  formData.append('file_x', fileX)
+  formData.append('file_y', fileY)
+  formData.append('file_z', fileZ)
+
+  const response = await apiClient.post('/tem/generate_3d', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })
+  return response.data
+}

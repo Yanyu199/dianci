@@ -3,7 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import json
 import numpy as np
 import io
+import os
+from pydantic import BaseModel
 from app.services.inversion_engine import tem_engine
+from app.services.imaging_engine import image_engine_3d
 app = FastAPI()
 
 # 允许前端跨域访问
@@ -138,6 +141,99 @@ async def invert_tem_data(file: UploadFile = File(...)):
             "status": "success",
             "message": f"成功反演 {len(results)} 个测点数据",
             "data": results
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# 定义前端传过来的路径参数模型
+class BatchLocalRequest(BaseModel):
+    input_dir: str
+    output_dir: str
+
+
+@app.post("/api/tem/batch_local")
+async def batch_local_inversion(req: BatchLocalRequest):
+    """直接读取本地硬盘目录，进行全自动批量反演"""
+    input_base_dir = req.input_dir.strip()
+    output_base_dir = req.output_dir.strip()
+
+    if not os.path.exists(input_base_dir):
+        return {"status": "error", "message": f"后端找不到输入文件夹: {input_base_dir}"}
+
+    success_count = 0
+    try:
+        # 遍历原始数据文件夹下的所有子文件夹 (比如 model_1, model_2)
+        for item in os.listdir(input_base_dir):
+            model_folder = os.path.join(input_base_dir, item)
+
+            if os.path.isdir(model_folder):
+                # 拼接寻找到你指定的 abnormal/dBzdt.txt
+                input_file = os.path.join(model_folder, "abnormal", "dBzdt.txt")
+
+                if os.path.exists(input_file):
+                    # 准备输出文件夹 (比如 model_1)
+                    output_folder = os.path.join(output_base_dir, item)
+                    os.makedirs(output_folder, exist_ok=True)
+
+                    output_file_csv = os.path.join(output_folder, "inversion_result.csv")
+                    output_file_dat = os.path.join(output_folder, "inversion_result.dat")
+
+                    # 1. 读取文本
+                    with open(input_file, 'r', encoding='utf-8') as f:
+                        text_content = f.read()
+
+                    # 2. 核心计算
+                    data_matrix = tem_engine.parse_txt(text_content)
+                    results = tem_engine.batch_invert(data_matrix)
+
+                    # 3. 写入 CSV 和 DAT 到目标硬盘
+                    with open(output_file_csv, 'w', encoding='utf-8') as f:
+                        f.write('\ufeff测点号,层号,顶面深度(m),地层电阻率(Ω·m)\n')
+                        for res in results:
+                            for j in range(len(res["resistivities"])):
+                                f.write(
+                                    f'{res["station"]},{j + 1},{res["depths"][j]:.2f},{res["resistivities"][j]:.2f}\n')
+
+                    with open(output_file_dat, 'w', encoding='utf-8') as f:
+                        f.write('Station\tLayer\tDepth(m)\tResistivity(Ohm.m)\n')
+                        for res in results:
+                            for j in range(len(res["resistivities"])):
+                                f.write(
+                                    f'{res["station"]}\t{j + 1}\t{res["depths"][j]:.2f}\t{res["resistivities"][j]:.2f}\n')
+
+                    success_count += 1
+
+        return {
+            "status": "success",
+            "message": f"批量反演成功！共处理了 {success_count} 个模型文件夹。",
+            "count": success_count
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"处理过程中发生异常: {str(e)}"}
+
+
+# ==========================================
+# === 新增：3D 智能立体成像接口 ===
+# ==========================================
+@app.post("/api/tem/generate_3d")
+async def generate_3d_model(
+        file_x: UploadFile = File(...),
+        file_y: UploadFile = File(...),
+        file_z: UploadFile = File(...)
+):
+    try:
+        text_x = (await file_x.read()).decode("utf-8-sig")
+        text_y = (await file_y.read()).decode("utf-8-sig")
+        text_z = (await file_z.read()).decode("utf-8-sig")
+
+        # 将三分量数据送入 3D 融合引擎
+        voxel_data = image_engine_3d.generate_full_space_voxel(text_x, text_y, text_z, point_spacing=10.0)
+
+        return {
+            "status": "success",
+            "message": "全空间三分量 3D 矩阵融合完毕",
+            "data": voxel_data
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
