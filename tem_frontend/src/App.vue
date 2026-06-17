@@ -12,9 +12,8 @@
         class="sys-menu"
         :ellipsis="false"
       >
-        <el-menu-item index="/data-process/xy">数据预处理 (X/Y)</el-menu-item>
-        <el-menu-item index="/inversion">智能反演</el-menu-item>
-        <el-menu-item index="/3d-imaging">3D 成果展示</el-menu-item>
+        <el-menu-item index="/data-process/xy">综合处理与反演</el-menu-item>
+        <el-menu-item index="/3d-imaging">全空间3D成果</el-menu-item>
       </el-menu>
     </el-header>
 

@@ -1,49 +1,30 @@
 <template>
   <div class="threed-container">
-    <h2>全空间智能立体成像</h2>
-
-    <div class="control-panel">
-      <el-alert type="success" show-icon style="margin-bottom: 20px" :closable="false" />
-
-      <div class="file-inputs">
-        <div class="file-row">
-          <span class="label x-color">🔴 X 分量数据 (横向剖面):</span>
-          <input
-            type="file"
-            @change="(e) => (fileX = (e.target as HTMLInputElement).files?.[0] || null)"
-          />
-        </div>
-        <div class="file-row">
-          <span class="label y-color">🟢 Y 分量数据 (纵向剖面):</span>
-          <input
-            type="file"
-            @change="(e) => (fileY = (e.target as HTMLInputElement).files?.[0] || null)"
-          />
-        </div>
-        <div class="file-row">
-          <span class="label z-color">🔵 Z 分量数据 (孔轴探测):</span>
-          <input
-            type="file"
-            @change="(e) => (fileZ = (e.target as HTMLInputElement).files?.[0] || null)"
-          />
-        </div>
-      </div>
-
-      <button
-        class="primary-btn"
-        :disabled="!allFilesSelected || isProcessing"
-        @click="start3DImaging"
+    <div class="header-box">
+      <h2>全空间三分量智能立体成像</h2>
+      <el-button
+        v-if="!isProcessing && !hasData"
+        type="primary"
+        @click="$router.push('/data-process/xy')"
       >
-        {{ isProcessing ? '🚀 正在进行多维空间插值与融合...' : '🌐 生成全空间 3D 实体验证模型' }}
-      </button>
+        ⬅️ 返回第一步处理数据
+      </el-button>
+    </div>
 
-      <div v-if="hasData" class="render-controls">
+    <div v-if="hasData || isProcessing" class="control-panel">
+      <el-alert
+        v-if="isProcessing"
+        title="🚀 正在接收第一步的数据，自动进行多维空间插值与融合，请稍候..."
+        type="success"
+        :closable="false"
+      />
+      <div v-else class="render-controls">
         <div class="control-item">
-          <span class="slider-label">🧊 实体拼接大小: {{ cubeSize }}</span>
+          <span class="slider-label">🧊 实体拼接大小 (消除空隙): {{ cubeSize }}</span>
           <el-slider v-model="cubeSize" :min="3" :max="30" @change="rebuildMesh"></el-slider>
         </div>
         <div class="control-item">
-          <span class="slider-label">👁️ 地层透明度: {{ opacity }}</span>
+          <span class="slider-label">👁️ 地层透明度 (看透异常体): {{ opacity }}</span>
           <el-slider
             v-model="opacity"
             :min="0.1"
@@ -55,15 +36,14 @@
       </div>
     </div>
 
+    <div v-if="!hasData && !isProcessing" class="empty-state">
+      <el-empty description="暂无 3D 数据。请先在第一步上传 X/Y/Z 数据并完成反演处理。" />
+    </div>
+
     <div v-show="hasData" class="render-panel">
       <div class="toolbar">
-        <span
-          >💡 提示：左键任意翻滚，右键平移，滚轮缩放。<b
-            >鼠标悬浮在模型上可查看该点精准数据。</b
-          ></span
-        >
+        <span>💡 提示：左键任意翻滚，右键平移，滚轮缩放。鼠标悬浮可查看坐标与电阻率。</span>
       </div>
-
       <div class="canvas-wrapper" @mousemove="onMouseMove" @mouseleave="tooltipVisible = false">
         <canvas ref="canvasRef" class="three-canvas"></canvas>
 
@@ -102,8 +82,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, toRaw } from 'vue'
 import { generate3DModel } from '@/api/dataProcess'
+import { globalData } from '@/store'
 import * as THREE from 'three'
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js'
 
@@ -142,11 +123,30 @@ const tooltipX = ref(0)
 const tooltipY = ref(0)
 const hoverData = ref({ x: 0, y: 0, z: 0, res: 0 })
 
+onMounted(() => {
+  // 检查全局仓库中是否已经有第一步传过来的 xyz 文件
+  if (globalData.fileX && globalData.fileY && globalData.fileZ) {
+    // 将全局文件赋值给当前页面的响应式变量
+    fileX.value = globalData.fileX
+    fileY.value = globalData.fileY
+    fileZ.value = globalData.fileZ
+
+    // 自动触发底层的 3D 融合生成引擎，免去用户手动点击！
+    start3DImaging()
+  } else {
+    // 如果没有数据（比如用户直接刷新了 3D 页面），则只初始化空的三维场景
+    initThreeJS()
+  }
+})
+
 const start3DImaging = async () => {
   if (!allFilesSelected.value) return
   isProcessing.value = true
   try {
-    const res = await generate3DModel(fileX.value!, fileY.value!, fileZ.value!)
+    // 🌟 核心修复：使用 toRaw 剥离 Vue 3 的 Proxy 响应式代理
+    // 将原生的二进制 File 对象真实地传递给后端，完美解决 422 报错
+    const res = await generate3DModel(toRaw(fileX.value!), toRaw(fileY.value!), toRaw(fileZ.value!))
+
     if (res.status === 'success') {
       rawVoxelData = res.data
       hasData.value = true
@@ -157,12 +157,12 @@ const start3DImaging = async () => {
       alert('3D 构建失败: ' + res.message)
     }
   } catch (error) {
+    console.error(error)
     alert('请求后端失败，请检查网络')
   } finally {
     isProcessing.value = false
   }
 }
-
 // --- 🌟 关键视觉优化：创建带白色描边的悬浮文字，防止被背景或模型遮挡 ---
 const makeTextSprite = (text: string, color: string, fontSize = 40) => {
   const canvas = document.createElement('canvas')
@@ -458,7 +458,18 @@ onBeforeUnmount(() => {
   border-left: 5px solid #67c23a;
   margin-bottom: 20px;
 }
-
+.header-box {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+.empty-state {
+  padding: 80px 0;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px dashed #dcdfe6;
+}
 .file-inputs {
   display: flex;
   flex-direction: column;
