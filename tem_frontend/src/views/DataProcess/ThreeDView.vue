@@ -51,7 +51,7 @@
           <div class="cb-title">电阻率 (Ω·m)</div>
           <div class="cb-scale">
             <span class="cb-val">{{ globalMaxRes.toFixed(0) }}</span>
-            <div class="cb-gradient"></div>
+            <div class="cb-gradient" :class="{ classified: colorMode === 'classified' }"></div>
             <span class="cb-val">{{ globalMinRes.toFixed(0) }}</span>
           </div>
         </div>
@@ -83,7 +83,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, toRaw } from 'vue'
-import { generate3DModel } from '@/api/dataProcess'
+import { generate3DModel, generateBoreholeImage } from '@/api/dataProcess'
 import { globalData } from '@/store'
 import * as THREE from 'three'
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js'
@@ -91,6 +91,7 @@ import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls
 const fileX = ref<File | null>(null)
 const fileY = ref<File | null>(null)
 const fileZ = ref<File | null>(null)
+const trajectoryFile = ref<File | null>(null)
 const allFilesSelected = computed(() => fileX.value && fileY.value && fileZ.value)
 
 const isProcessing = ref(false)
@@ -104,6 +105,7 @@ let rawVoxelData: any[] = []
 // 全局极值，用于色带显示
 const globalMinRes = ref(0)
 const globalMaxRes = ref(100)
+const colorMode = ref<'jet' | 'classified'>('jet')
 
 // Three.js 核心
 let renderer: THREE.WebGLRenderer
@@ -112,6 +114,8 @@ let mainCamera: THREE.PerspectiveCamera
 let controls: TrackballControls
 let instancedMesh: THREE.InstancedMesh | null = null
 let boundsGroup: THREE.Group | null = null
+let boreholeOverlayGroup: THREE.Group | null = null
+let boreholeSceneData: any = null
 let hudScene: THREE.Scene
 let hudCamera: THREE.PerspectiveCamera
 
@@ -130,6 +134,7 @@ onMounted(() => {
     fileX.value = globalData.fileX
     fileY.value = globalData.fileY
     fileZ.value = globalData.fileZ
+    trajectoryFile.value = globalData.trajectoryFile
 
     // 自动触发底层的 3D 融合生成引擎，免去用户手动点击！
     start3DImaging()
@@ -145,13 +150,23 @@ const start3DImaging = async () => {
   try {
     // 🌟 核心修复：使用 toRaw 剥离 Vue 3 的 Proxy 响应式代理
     // 将原生的二进制 File 对象真实地传递给后端，完美解决 422 报错
-    const res = await generate3DModel(toRaw(fileX.value!), toRaw(fileY.value!), toRaw(fileZ.value!))
+    const res = trajectoryFile.value
+      ? await generateBoreholeImage(
+          toRaw(fileX.value!),
+          toRaw(fileY.value!),
+          toRaw(fileZ.value!),
+          toRaw(trajectoryFile.value)
+        )
+      : await generate3DModel(toRaw(fileX.value!), toRaw(fileY.value!), toRaw(fileZ.value!))
 
     if (res.status === 'success') {
-      rawVoxelData = res.data
+      boreholeSceneData = Array.isArray(res.data) ? null : res.data
+      colorMode.value = boreholeSceneData?.meta?.color_thresholds ? 'classified' : 'jet'
+      rawVoxelData = Array.isArray(res.data) ? res.data : res.data.voxels || []
       hasData.value = true
       await nextTick()
       initThreeJS()
+      onWindowResize()
       rebuildMesh()
     } else {
       alert('3D 构建失败: ' + res.message)
@@ -278,7 +293,9 @@ const createThickAxesHUD = () => {
 const initThreeJS = () => {
   if (!canvasRef.value || renderer) return
   renderer = new THREE.WebGLRenderer({ canvas: canvasRef.value, antialias: true, alpha: true })
-  renderer.setSize(canvasRef.value.clientWidth, canvasRef.value.clientHeight)
+  const width = canvasRef.value.clientWidth || canvasRef.value.parentElement?.clientWidth || 900
+  const height = canvasRef.value.clientHeight || canvasRef.value.parentElement?.clientHeight || 700
+  renderer.setSize(width, height, false)
   renderer.setPixelRatio(window.devicePixelRatio)
   renderer.autoClear = false
 
@@ -288,7 +305,7 @@ const initThreeJS = () => {
 
   mainCamera = new THREE.PerspectiveCamera(
     45,
-    canvasRef.value.clientWidth / canvasRef.value.clientHeight,
+    width / height,
     1,
     10000
   )
@@ -319,6 +336,10 @@ const rebuildMesh = () => {
     instancedMesh.geometry.dispose()
     ;(instancedMesh.material as THREE.Material).dispose()
   }
+  if (boreholeOverlayGroup) {
+    mainScene.remove(boreholeOverlayGroup)
+    boreholeOverlayGroup.clear()
+  }
 
   let minRes = Infinity,
     maxRes = -Infinity
@@ -345,7 +366,8 @@ const rebuildMesh = () => {
 
   buildBoundingBoxAndScales(minX, maxX, minY, maxY, minZ, maxZ)
 
-  const geometry = new THREE.BoxGeometry(cubeSize.value, cubeSize.value, cubeSize.value)
+  const pointSize = boreholeSceneData ? Math.max(0.4, cubeSize.value * 0.28) : cubeSize.value
+  const geometry = new THREE.BoxGeometry(pointSize, pointSize, pointSize)
   const material = new THREE.MeshPhongMaterial({
     transparent: true,
     opacity: opacity.value,
@@ -360,13 +382,47 @@ const rebuildMesh = () => {
     dummy.position.set(point[0], point[1], point[2])
     dummy.updateMatrix()
     instancedMesh!.setMatrixAt(index, dummy.matrix)
-    color.set(getJetColor(point[3], minRes, maxRes))
+    color.copy(getResistivityColor(point[3], minRes, maxRes, point[4]))
     instancedMesh!.setColorAt(index, color)
   })
 
   instancedMesh.instanceMatrix.needsUpdate = true
   if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true
   mainScene.add(instancedMesh)
+  buildBoreholeOverlays()
+}
+
+const buildBoreholeOverlays = () => {
+  if (!boreholeSceneData) return
+  boreholeOverlayGroup = new THREE.Group()
+
+  const trajectoryPoints = (boreholeSceneData.trajectory || []).map(
+    (p: any) => new THREE.Vector3(p.x, p.y, p.z)
+  )
+  if (trajectoryPoints.length > 1) {
+    const trajectoryGeometry = new THREE.BufferGeometry().setFromPoints(trajectoryPoints)
+    const trajectoryLine = new THREE.Line(
+      trajectoryGeometry,
+      new THREE.LineDashedMaterial({
+        color: 0xd7191c,
+        dashSize: cubeSize.value * 1.6,
+        gapSize: cubeSize.value * 0.8,
+        depthTest: false
+      })
+    )
+    trajectoryLine.computeLineDistances()
+    boreholeOverlayGroup.add(trajectoryLine)
+  }
+
+  const stationGeo = new THREE.SphereGeometry(cubeSize.value * 0.35, 12, 8)
+  const stationMat = new THREE.MeshBasicMaterial({ color: 0xd7191c, depthTest: false })
+  ;(boreholeSceneData.stations || []).forEach((p: any) => {
+    const mesh = new THREE.Mesh(stationGeo, stationMat)
+    mesh.position.set(p.x, p.y, p.z)
+    boreholeOverlayGroup!.add(mesh)
+  })
+
+  mainScene.add(boreholeOverlayGroup)
 }
 
 const getJetColor = (value: number, min: number, max: number) => {
@@ -376,6 +432,26 @@ const getJetColor = (value: number, min: number, max: number) => {
   let g = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * (v - 0.25))))
   let b = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * v)))
   return new THREE.Color(r, g, b)
+}
+
+const getResistivityColor = (value: number, min: number, max: number, _classCode?: number) => {
+  const thresholds = boreholeSceneData?.meta?.color_thresholds
+  if (thresholds) {
+    return getGreenYellowRedColor(value, min, max)
+  }
+  return getJetColor(value, min, max)
+}
+
+const getGreenYellowRedColor = (value: number, min: number, max: number) => {
+  const lowColor = new THREE.Color('#2fbf71')
+  const normalColor = new THREE.Color('#f2d447')
+  const highColor = new THREE.Color('#e54545')
+  let t = (value - min) / (max - min + 1e-8)
+  t = Math.max(0, Math.min(1, t))
+  if (t <= 0.5) {
+    return lowColor.lerp(normalColor, t * 2)
+  }
+  return normalColor.lerp(highColor, (t - 0.5) * 2)
 }
 
 const onMouseMove = (event: MouseEvent) => {
@@ -431,8 +507,8 @@ const animate = () => {
 
 const onWindowResize = () => {
   if (!canvasRef.value || !mainCamera || !renderer) return
-  const w = canvasRef.value.clientWidth
-  const h = canvasRef.value.clientHeight
+  const w = canvasRef.value.clientWidth || canvasRef.value.parentElement?.clientWidth || 900
+  const h = canvasRef.value.clientHeight || canvasRef.value.parentElement?.clientHeight || 700
   mainCamera.aspect = w / h
   mainCamera.updateProjectionMatrix()
   renderer.setSize(w, h, false)
@@ -612,6 +688,14 @@ onBeforeUnmount(() => {
     #ffff00 62.5%,
     #ff0000 87.5%,
     #7f0000 100%
+  );
+}
+.cb-gradient.classified {
+  background: linear-gradient(
+    to top,
+    #2fbf71 0%,
+    #f2d447 50%,
+    #e54545 100%
   );
 }
 

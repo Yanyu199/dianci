@@ -44,3 +44,21 @@ export const generate3DModel = async (fileX: File, fileY: File, fileZ: File) => 
   })
   return response.data
 }
+
+export const generateBoreholeImage = async (
+  fileX: File,
+  fileY: File,
+  fileZ: File,
+  trajectoryFile: File
+) => {
+  const formData = new FormData()
+  formData.append('file_x', fileX)
+  formData.append('file_y', fileY)
+  formData.append('file_z', fileZ)
+  formData.append('trajectory_file', trajectoryFile)
+
+  const response = await apiClient.post('/tem/borehole_image', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })
+  return response.data
+}

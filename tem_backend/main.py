@@ -7,6 +7,7 @@ import os
 from pydantic import BaseModel
 from app.services.inversion_engine import tem_engine
 from app.services.imaging_engine import image_engine_3d
+from app.services.borehole_imaging_engine import borehole_image_engine
 app = FastAPI()
 
 # 允许前端跨域访问
@@ -234,6 +235,29 @@ async def generate_3d_model(
             "status": "success",
             "message": "全空间三分量 3D 矩阵融合完毕",
             "data": voxel_data
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/tem/borehole_image")
+async def generate_borehole_image(
+        file_x: UploadFile = File(...),
+        file_y: UploadFile = File(...),
+        file_z: UploadFile = File(...),
+        trajectory_file: UploadFile = File(...)
+):
+    try:
+        scene = borehole_image_engine.generate_scene(
+            await file_x.read(),
+            await file_y.read(),
+            await file_z.read(),
+            await trajectory_file.read(),
+        )
+        return {
+            "status": "success",
+            "message": "Borehole trajectory TEM 3D imaging completed.",
+            "data": scene
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}

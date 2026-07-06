@@ -8,7 +8,7 @@
         <input
           type="file"
           class="file-input"
-          accept=".txt,.csv"
+          accept=".txt,.csv,.dat"
           @change="(e) => handleFile(e, 'X')"
         />
         <el-button size="small" type="primary" plain @click="showXParams = true" class="param-btn">
@@ -21,7 +21,7 @@
         <input
           type="file"
           class="file-input"
-          accept=".txt,.csv"
+          accept=".txt,.csv,.dat"
           @change="(e) => handleFile(e, 'Y')"
         />
         <el-button size="small" type="success" plain @click="showYParams = true" class="param-btn">
@@ -34,10 +34,21 @@
         <input
           type="file"
           class="file-input"
-          accept=".txt,.csv"
+          accept=".txt,.csv,.dat"
           @change="(e) => handleFile(e, 'Z')"
         />
         <p class="z-tip">上传后将自动触发后台智能反演</p>
+      </div>
+
+      <div class="control-card trajectory-card">
+        <div class="card-header">钻孔轨迹 (Excel)</div>
+        <input
+          type="file"
+          class="file-input"
+          accept=".xlsx,.xls"
+          @change="(e) => handleFile(e, 'T')"
+        />
+        <p class="z-tip">上传后 3D 页将按真实钻孔轨迹进行立体成像</p>
       </div>
 
       <div class="action-box">
@@ -182,6 +193,7 @@ const router = useRouter()
 const fileX = ref<File | null>(null)
 const fileY = ref<File | null>(null)
 const fileZ = ref<File | null>(null)
+const trajectoryFile = ref<File | null>(null)
 
 const showXParams = ref(false)
 const showYParams = ref(false)
@@ -210,23 +222,29 @@ const detectChannelCount = async (file: File) => {
   try {
     const text = await file.text()
     const lines = text.trim().split('\n')
+    const numericRows = lines
+      .map((line) => line.trim().split(/[\s,]+/).map((part) => Number(part)))
+      .filter((parts) => parts.length >= 2 && parts.every((value) => Number.isFinite(value)))
+
+    const fieldRows = numericRows.filter((parts) => parts.length >= 6)
+    if (fieldRows.length > 0) {
+      const perStation = new Map<number, number>()
+      fieldRows.forEach((row) => {
+        const station = row[0]
+        perStation.set(station, (perStation.get(station) || 0) + 1)
+      })
+      return Math.max(...Array.from(perStation.values()))
+    }
+
     let count = 0
     let isFirstLine = true // 用于跳过表头
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim()
-      if (!line) continue
-
+    for (const parts of numericRows) {
       if (isFirstLine) {
         isFirstLine = false
         continue
       }
-
-      const parts = line.split(/[\s,]+/)
-      if (parts.length >= 2) {
-        const time = parseFloat(parts[0])
-        if (!isNaN(time)) count++
-      }
+      if (parts.length >= 2) count++
     }
     return count > 0 ? count : 40
   } catch (error) {
@@ -234,7 +252,7 @@ const detectChannelCount = async (file: File) => {
   }
 }
 
-const handleFile = async (e: Event, type: 'X' | 'Y' | 'Z') => {
+const handleFile = async (e: Event, type: 'X' | 'Y' | 'Z' | 'T') => {
   const target = e.target as HTMLInputElement
   const file = target.files?.[0] || null
   if (!file) return
@@ -247,6 +265,8 @@ const handleFile = async (e: Event, type: 'X' | 'Y' | 'Z') => {
     yParams.value.channelCount = await detectChannelCount(file)
   } else if (type === 'Z') {
     fileZ.value = file
+  } else if (type === 'T') {
+    trajectoryFile.value = file
   }
 }
 
@@ -272,6 +292,31 @@ const parseRawFileGrouped = async (file: File, params: any) => {
 
   let validRowCount = 0
   let isFirstLine = true
+  const fieldRows = lines
+    .map((line) => line.trim().split(/[\s,]+/).map((part) => Number(part)))
+    .filter((parts) => parts.length >= 6 && parts.every((value) => Number.isFinite(value)))
+
+  if (fieldRows.length > 0) {
+    const grouped = new Map<number, number[][]>()
+    fieldRows.forEach((row) => {
+      const station = row[0]
+      if (!grouped.has(station)) grouped.set(station, [])
+      grouped.get(station)!.push(row)
+    })
+
+    return Array.from(grouped.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([station, rows]) => {
+        const data = rows
+          .sort((a, b) => a[3] - b[3])
+          .slice(0, channelCount)
+          .map((row) => {
+            const normalizedV = ((Math.abs(row[4]) + 1e-16) / normalizeFactor) * 1e6
+            return [row[3], normalizedV]
+          })
+        return { station, data }
+      })
+  }
 
   for (let i = 0; i < lines.length; i++) {
     // 超过设定的测道数则停止读取
@@ -335,6 +380,7 @@ const startProcess = async () => {
     globalData.fileX = fileX.value
     globalData.fileY = fileY.value
     globalData.fileZ = fileZ.value
+    globalData.trajectoryFile = trajectoryFile.value
 
     // 将用户设置的真实物理参量传入解析器
     const resX = await parseRawFileGrouped(fileX.value!, xParams.value)
@@ -509,6 +555,9 @@ onBeforeUnmount(() => {
 }
 .control-card.z-card {
   border-left: 4px solid #1890ff;
+}
+.control-card.trajectory-card {
+  border-left: 4px solid #5b6472;
 }
 
 .card-header {

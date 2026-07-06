@@ -5,6 +5,7 @@ export const globalData = reactive({
   fileX: null as File | null,
   fileY: null as File | null,
   fileZ: null as File | null,
+  trajectoryFile: null as File | null,
   inversionResult: null as any[] | null
 })
 
@@ -13,5 +14,6 @@ export const clearGlobalData = () => {
   globalData.fileX = null
   globalData.fileY = null
   globalData.fileZ = null
+  globalData.trajectoryFile = null
   globalData.inversionResult = null
 }

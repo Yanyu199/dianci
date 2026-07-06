@@ -60,9 +60,12 @@ async def upload_xy_data(
     @router.post("/tem/invert")
     async def invert_tem_data(file: UploadFile = File(...)):
         try:
-            # 1. 读取用户上传的文本
+            # 1. 读取用户上传的文本 (增加对 .dat 常见的 gbk 编码兼容)
             content = await file.read()
-            text = content.decode("utf-8")
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                text = content.decode("gbk", errors="ignore")
 
             # 2. 解析文本获取矩阵
             data_matrix = tem_engine.parse_txt(text)
