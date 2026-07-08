@@ -7,6 +7,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from .inversion_engine import tem_engine
+from .result_dat_generator import generate_result_points, generate_sections
+from .tem_data_parser import ParsedTEMData, parse_tem_text, validate_three_components
 
 
 @dataclass
@@ -29,36 +31,15 @@ class BoreholeImagingEngine:
         return payload.decode("utf-8", errors="ignore")
 
     def parse_component_text(self, text: str) -> ComponentData:
-        rows: List[List[float]] = []
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = [p for p in re.split(r"[\s,]+", line) if p]
-            try:
-                values = [float(p) for p in parts]
-            except ValueError:
-                continue
-            if len(values) >= 5:
-                rows.append(values)
+        return self._component_from_parsed(parse_tem_text(text))
 
-        if not rows:
-            raise ValueError("No numeric TEM rows were found in the uploaded component file.")
-
-        arr = np.asarray(rows, dtype=float)
-
-        # Field DAT/CSV format: point, line, frequency, time, voltage, apparent_resistivity, ...
-        point_count = len(np.unique(arr[:, 0].astype(int)))
-        looks_like_field = arr.shape[1] >= 6 and point_count > 1 and point_count < arr.shape[0] * 0.8
-        if looks_like_field:
-            return self._parse_field_rows(arr)
-
-        # Legacy matrix format: time, station_1, station_2, ...
-        times = arr[:, 0].astype(float)
-        voltage = arr[:, 1:].T.astype(float)
-        stations = list(range(1, voltage.shape[0] + 1))
-        resistivity = np.zeros_like(voltage)
-        return ComponentData(stations=stations, times=times, voltage=voltage, apparent_resistivity=resistivity)
+    def _component_from_parsed(self, parsed: ParsedTEMData) -> ComponentData:
+        return ComponentData(
+            stations=parsed.stations,
+            times=parsed.times,
+            voltage=parsed.responses,
+            apparent_resistivity=parsed.aux_values,
+        )
 
     def _parse_field_rows(self, arr: np.ndarray) -> ComponentData:
         station_ids = sorted(int(v) for v in np.unique(arr[:, 0].astype(int)))
@@ -160,15 +141,28 @@ class BoreholeImagingEngine:
         out.sort(key=lambda p: p["md"])
         return out
 
-    def generate_scene(self, x_payload: bytes, y_payload: bytes, z_payload: bytes, trajectory_payload: bytes) -> dict:
-        comp_x = self.parse_component_text(self.decode_bytes(x_payload))
-        comp_y = self.parse_component_text(self.decode_bytes(y_payload))
+    def generate_scene(
+        self,
+        x_payload: bytes,
+        y_payload: bytes,
+        z_payload: bytes,
+        trajectory_payload: bytes,
+        params: Optional[dict] = None,
+    ) -> dict:
+        params = params or {}
+        x_text = self.decode_bytes(x_payload)
+        y_text = self.decode_bytes(y_payload)
         z_text = self.decode_bytes(z_payload)
-        comp_z = self.parse_component_text(z_text)
+        parsed_x = parse_tem_text(x_text, component_name="X")
+        parsed_y = parse_tem_text(y_text, component_name="Y")
+        parsed_z = parse_tem_text(z_text, component_name="Z")
+        qc_report = validate_three_components(parsed_x, parsed_y, parsed_z)
+        comp_x = self._component_from_parsed(parsed_x)
+        comp_y = self._component_from_parsed(parsed_y)
+        comp_z = self._component_from_parsed(parsed_z)
         trajectory = self.parse_trajectory_excel(trajectory_payload)
 
-        z_matrix = tem_engine.parse_txt(z_text)
-        inversion_results = tem_engine.batch_invert(z_matrix)
+        inversion_results = tem_engine.invert_component(parsed_z)
         inversion_by_station = self._map_inversion_to_station(comp_z.stations, inversion_results)
 
         stations = sorted(set(comp_x.stations) & set(comp_y.stations) & set(comp_z.stations) & set(inversion_by_station))
@@ -193,6 +187,7 @@ class BoreholeImagingEngine:
         max_md = trajectory[-1]["md"]
         min_station = min(stations)
         max_station = max(stations)
+        radius_limit = self._radius_limit_from_params(params)
 
         station_markers = []
         columns = []
@@ -227,6 +222,7 @@ class BoreholeImagingEngine:
 
             inversion = inversion_by_station[station]
             layer_edges = self._layer_edges(inversion["depths"], len(inversion["resistivities"]))
+            layer_edges = self._scale_layer_edges(layer_edges, radius_limit)
             section_layers = []
             for layer_index, rho in enumerate(inversion["resistivities"]):
                 inner_radius = layer_edges[layer_index]
@@ -314,6 +310,7 @@ class BoreholeImagingEngine:
                         direction_strength=layer["direction"]["strength"] if layer["class_code"] else 0.0,
                         region_id=layer["region_id"],
                         radial_samples=1,
+                        md=section["md"],
                     )
                 )
                 volume_points.extend(
@@ -333,12 +330,22 @@ class BoreholeImagingEngine:
                         direction_strength=layer["direction"]["strength"] if layer["class_code"] else 0.0,
                         region_id=layer["region_id"],
                         radial_samples=4,
+                        md=section["md"],
                     )
                 )
 
         render_points = volume_points if volume_points else surface_points
         self._attach_resistivity_class(render_points, thresholds)
         self._attach_resistivity_class(surface_points, thresholds)
+        result_points = self._result_rows_from_render_points(render_points)
+        x_section, y_section = self._section_rows_from_render_points(render_points)
+        result_metadata = self._result_points_metadata(
+            result_points,
+            coordinate_mode="trajectory_xyz",
+            radius_limit=radius_limit,
+            longitudinal_section_count=len(render_sections),
+            anomaly_region_count=len(anomaly_regions),
+        )
         voxels = self._voxelize(render_points)
         return {
             "trajectory": trajectory,
@@ -347,9 +354,14 @@ class BoreholeImagingEngine:
             "anomaly_points": layer_points,
             "cylinder_points": surface_points,
             "volume_point_count": len(volume_points),
+            "points": result_points,
+            "x_section": x_section,
+            "y_section": y_section,
             "voxels": voxels,
             "bounds": self._bounds(trajectory, render_points),
             "meta": {
+                "qc": qc_report,
+                "result_points": result_metadata,
                 "station_count": len(stations),
                 "longitudinal_section_count": len(render_sections),
                 "layer_count": max(len(v["resistivities"]) for v in inversion_by_station.values()),
@@ -466,6 +478,7 @@ class BoreholeImagingEngine:
         direction_strength: float = 0.0,
         region_id: Optional[str] = None,
         radial_samples: int = 4,
+        md: Optional[float] = None,
     ) -> List[dict]:
         points = []
         angular_samples = 32
@@ -496,6 +509,7 @@ class BoreholeImagingEngine:
                 points.append(
                     {
                         "station": station,
+                        "md": round(float(md), 3) if md is not None else round(float(station), 3),
                         "layer": layer,
                         "radius": round(display_radius, 3),
                         "angle": round(math.degrees(angle), 3),
@@ -532,6 +546,113 @@ class BoreholeImagingEngine:
         value = float(background_resistivity) + (float(resistivity) - float(background_resistivity)) * anomaly_weight
         local_class_code = int(class_code) if anomaly_weight >= 0.28 else 0
         return value, local_class_code, anomaly_weight
+
+    def _radius_limit_from_params(self, params: dict) -> float:
+        def axis_radius(key: str) -> float:
+            value = params.get(key) or (-30.0, 30.0)
+            try:
+                return max(abs(float(value[0])), abs(float(value[1])))
+            except (TypeError, ValueError, IndexError):
+                return 30.0
+
+        explicit = params.get("radius_limit")
+        if explicit is not None:
+            try:
+                radius = float(explicit)
+                if np.isfinite(radius) and radius > 0:
+                    return radius
+            except (TypeError, ValueError):
+                pass
+        return float(min(axis_radius("x_range"), axis_radius("y_range")))
+
+    def _scale_layer_edges(self, edges: List[float], radius_limit: float) -> List[float]:
+        if not edges:
+            return edges
+        radius_limit = float(radius_limit)
+        if not np.isfinite(radius_limit) or radius_limit <= 0:
+            return edges
+        outer = max(float(edges[-1]), 1e-9)
+        scale = radius_limit / outer
+        return [float(edge) * scale for edge in edges]
+
+    def _result_rows_from_render_points(self, points: List[dict]) -> List[List[float]]:
+        rows = []
+        ordered = sorted(
+            points,
+            key=lambda p: (
+                float(p.get("md", p.get("station", 0.0))),
+                float(p.get("radius", 0.0)),
+                float(p.get("angle", 0.0)),
+            ),
+        )
+        for point in ordered:
+            try:
+                row = [
+                    float(point["x"]),
+                    float(point["y"]),
+                    float(point["z"]),
+                    float(point["resistivity"]),
+                    int(point.get("class_code", 0)),
+                ]
+            except (KeyError, TypeError, ValueError):
+                continue
+            if np.isfinite(row[:4]).all():
+                rows.append([round(row[0], 6), round(row[1], 6), round(row[2], 6), round(row[3], 6), row[4]])
+        return rows
+
+    def _section_rows_from_render_points(self, points: List[dict]) -> Tuple[List[List[float]], List[List[float]]]:
+        x_rows: List[List[float]] = []
+        y_rows: List[List[float]] = []
+        for point in points:
+            try:
+                md = float(point.get("md", point.get("station", 0.0)))
+                radius = float(point.get("radius", 0.0))
+                angle = math.radians(float(point.get("angle", 0.0)))
+                value = float(point["resistivity"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            x_offset = radius * math.cos(angle)
+            y_offset = radius * math.sin(angle)
+            if abs(y_offset) <= max(radius * 1e-6, 1e-6):
+                x_rows.append([round(md, 6), round(x_offset, 6), round(value, 6)])
+            if abs(x_offset) <= max(radius * 1e-6, 1e-6):
+                y_rows.append([round(md, 6), round(y_offset, 6), round(value, 6)])
+
+        x_rows.sort(key=lambda row: (row[0], row[1]))
+        y_rows.sort(key=lambda row: (row[0], row[1]))
+        return x_rows, y_rows
+
+    def _result_points_metadata(
+        self,
+        points: List[List[float]],
+        coordinate_mode: str,
+        radius_limit: float,
+        longitudinal_section_count: int,
+        anomaly_region_count: int,
+    ) -> dict:
+        if not points:
+            return {
+                "point_count": 0,
+                "coordinate_mode": coordinate_mode,
+                "radius_limit": float(radius_limit),
+                "longitudinal_section_count": int(longitudinal_section_count),
+                "anomaly_region_count": int(anomaly_region_count),
+            }
+        arr = np.asarray(points, dtype=float)
+        class_values, class_counts = np.unique(arr[:, 4].astype(int), return_counts=True)
+        return {
+            "point_count": int(arr.shape[0]),
+            "coordinate_mode": coordinate_mode,
+            "radius_limit": float(radius_limit),
+            "longitudinal_section_count": int(longitudinal_section_count),
+            "anomaly_region_count": int(anomaly_region_count),
+            "x_range": [round(float(np.nanmin(arr[:, 0])), 6), round(float(np.nanmax(arr[:, 0])), 6)],
+            "y_range": [round(float(np.nanmin(arr[:, 1])), 6), round(float(np.nanmax(arr[:, 1])), 6)],
+            "z_range": [round(float(np.nanmin(arr[:, 2])), 6), round(float(np.nanmax(arr[:, 2])), 6)],
+            "value_min": round(float(np.nanmin(arr[:, 3])), 6),
+            "value_max": round(float(np.nanmax(arr[:, 3])), 6),
+            "class_counts": {str(int(k)): int(v) for k, v in zip(class_values, class_counts)},
+        }
 
     def _cylindrical_sector_points(
         self,
@@ -1098,6 +1219,17 @@ class BoreholeImagingEngine:
         if max_station == min_station:
             return 0.0
         return (station - min_station) / (max_station - min_station) * max_md
+
+    def _station_depth_map(self, stations: List[int], trajectory: List[dict]) -> Dict[int, float]:
+        if not stations or not trajectory:
+            return {int(station): float(station) for station in stations}
+        min_station = min(stations)
+        max_station = max(stations)
+        max_md = float(trajectory[-1]["md"])
+        return {
+            int(station): self._station_to_md(int(station), min_station, max_station, max_md)
+            for station in stations
+        }
 
     def _frame_at_md(self, trajectory: List[dict], md: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
         mds = np.array([p["md"] for p in trajectory], dtype=float)

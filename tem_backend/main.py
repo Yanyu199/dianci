@@ -1,13 +1,21 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+﻿from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import numpy as np
 import io
 import os
+import uuid
 from pydantic import BaseModel
 from app.services.inversion_engine import tem_engine
 from app.services.imaging_engine import image_engine_3d
 from app.services.borehole_imaging_engine import borehole_image_engine
+from app.services.result_dat_generator import (
+    export_3d_result_dat,
+    export_section_dat,
+    generate_result_points,
+    generate_sections,
+)
+from app.services.tem_data_parser import parse_tem_bytes, validate_three_components
 app = FastAPI()
 
 # 允许前端跨域访问
@@ -258,6 +266,146 @@ async def generate_borehole_image(
             "status": "success",
             "message": "Borehole trajectory TEM 3D imaging completed.",
             "data": scene
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def _parse_range(value: str, default):
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        parts = [float(part.strip()) for part in str(value).replace("[", "").replace("]", "").split(",")]
+        if len(parts) != 2 or parts[0] >= parts[1]:
+            raise ValueError
+        return (parts[0], parts[1])
+    except Exception as exc:
+        raise ValueError(f"范围参数格式错误：{value}，应为 min,max") from exc
+
+
+@app.post("/api/tem/generate_result_dat")
+async def generate_result_dat(
+        file_x: UploadFile = File(...),
+        file_y: UploadFile = File(...),
+        file_z: UploadFile = File(...),
+        trajectory_file: UploadFile = File(None),
+        x_range: str = Form("-30,30"),
+        y_range: str = Form("-30,30"),
+        grid_size: float = Form(3.0)
+):
+    try:
+        x_payload = await file_x.read()
+        y_payload = await file_y.read()
+        z_payload = await file_z.read()
+        trajectory_payload = await trajectory_file.read() if trajectory_file is not None else None
+
+        if trajectory_payload:
+            params = {
+                "x_range": _parse_range(x_range, (-30.0, 30.0)),
+                "y_range": _parse_range(y_range, (-30.0, 30.0)),
+                "grid_size": float(grid_size),
+            }
+            scene = borehole_image_engine.generate_scene(x_payload, y_payload, z_payload, trajectory_payload, params)
+            points = scene.get("points", [])
+            x_section = scene.get("x_section", [])
+            y_section = scene.get("y_section", [])
+            scene_meta = scene.get("meta", {})
+
+            output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "tem_results", uuid.uuid4().hex)
+            result_3d_path = os.path.join(output_dir, "\u4e09\u7ef4\u6210\u679c\u6570\u636e.dat")
+            x_section_path = os.path.join(output_dir, "X\u5256\u9762.dat")
+            y_section_path = os.path.join(output_dir, "Y\u5256\u9762.dat")
+            export_3d_result_dat(points, result_3d_path)
+            export_section_dat(x_section, x_section_path)
+            export_section_dat(y_section, y_section_path)
+
+            return {
+                "status": "success",
+                "message": "\u4e09\u7ef4\u6210\u679c DAT \u751f\u6210\u5b8c\u6210\u3002",
+                "data": {
+                    "points": points,
+                    "x_section": x_section,
+                    "y_section": y_section,
+                    "trajectory": scene.get("trajectory", []),
+                    "stations": scene.get("stations", []),
+                    "files": {
+                        "result_3d": result_3d_path,
+                        "x_section": x_section_path,
+                        "y_section": y_section_path,
+                    },
+                    "metadata": {
+                        "qc": scene_meta.get("qc", {}),
+                        "result": scene_meta.get("result_points", {}),
+                        "inversion_count": scene_meta.get("station_count", 0),
+                        "coordinate_mode": "trajectory_xyz",
+                        "color_thresholds": scene_meta.get("color_thresholds"),
+                        "class_codes": scene_meta.get("class_codes"),
+                        "anomaly_regions": scene_meta.get("anomaly_regions", []),
+                    },
+                },
+            }
+
+        x_component = parse_tem_bytes(x_payload, component_name="X")
+        y_component = parse_tem_bytes(y_payload, component_name="Y")
+        z_component = parse_tem_bytes(z_payload, component_name="Z")
+        qc_report = validate_three_components(x_component, y_component, z_component)
+
+        inversion_results = tem_engine.invert_component(z_component)
+        if not inversion_results:
+            raise ValueError("Z 文件反演没有返回结果。")
+
+        depth_map = None
+        if trajectory_file is not None:
+            trajectory = borehole_image_engine.parse_trajectory_excel(await trajectory_file.read())
+            min_station = min(z_component.stations)
+            max_station = max(z_component.stations)
+            max_md = float(trajectory[-1]["md"])
+            depth_map = {
+                int(station): borehole_image_engine._station_to_md(int(station), min_station, max_station, max_md)
+                for station in z_component.stations
+            }
+
+        params = {
+            "x_range": _parse_range(x_range, (-30.0, 30.0)),
+            "y_range": _parse_range(y_range, (-30.0, 30.0)),
+            "grid_size": float(grid_size),
+            "depth_map": depth_map,
+        }
+        points, point_metadata = generate_result_points(
+            x_component,
+            y_component,
+            z_component,
+            inversion_results,
+            params,
+        )
+        x_section, y_section = generate_sections(points, grid_size=float(grid_size))
+
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "tem_results", uuid.uuid4().hex)
+        result_3d_path = os.path.join(output_dir, "三维成果数据.dat")
+        x_section_path = os.path.join(output_dir, "X剖面.dat")
+        y_section_path = os.path.join(output_dir, "Y剖面.dat")
+        export_3d_result_dat(points, result_3d_path)
+        export_section_dat(x_section, x_section_path)
+        export_section_dat(y_section, y_section_path)
+
+        return {
+            "status": "success",
+            "message": "三维成果 DAT 生成完成。",
+            "data": {
+                "points": points,
+                "x_section": x_section,
+                "y_section": y_section,
+                "files": {
+                    "result_3d": result_3d_path,
+                    "x_section": x_section_path,
+                    "y_section": y_section_path,
+                },
+                "metadata": {
+                    "qc": qc_report,
+                    "result": point_metadata,
+                    "inversion_count": len(inversion_results),
+                },
+            },
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}

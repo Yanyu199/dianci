@@ -13,6 +13,9 @@ __pycache__/
 tem_backend/venv/
 tem_backend/env/
 .env
+tem_backend/outputs/
+tem_backend/dev-*.log
+tem_frontend/dev-*.log
 
 # OS
 .DS_Store

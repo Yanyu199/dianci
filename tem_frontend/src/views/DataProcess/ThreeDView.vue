@@ -33,6 +33,11 @@
             @change="rebuildMesh"
           ></el-slider>
         </div>
+        <div class="download-actions">
+          <el-button size="small" @click="downloadDat('三维成果数据.dat', resultRows, 4)">下载 三维成果数据.dat</el-button>
+          <el-button size="small" @click="downloadDat('X剖面.dat', xSectionRows, 3)">下载 X剖面.dat</el-button>
+          <el-button size="small" @click="downloadDat('Y剖面.dat', ySectionRows, 3)">下载 Y剖面.dat</el-button>
+        </div>
       </div>
     </div>
 
@@ -83,7 +88,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, toRaw } from 'vue'
-import { generate3DModel, generateBoreholeImage } from '@/api/dataProcess'
+import { generateResultDat } from '@/api/dataProcess'
 import { globalData } from '@/store'
 import * as THREE from 'three'
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js'
@@ -101,6 +106,9 @@ const canvasRef = ref<HTMLCanvasElement | null>(null)
 const cubeSize = ref(10)
 const opacity = ref(0.85)
 let rawVoxelData: any[] = []
+let resultRows: any[] = []
+let xSectionRows: any[] = []
+let ySectionRows: any[] = []
 
 // 全局极值，用于色带显示
 const globalMinRes = ref(0)
@@ -150,19 +158,23 @@ const start3DImaging = async () => {
   try {
     // 🌟 核心修复：使用 toRaw 剥离 Vue 3 的 Proxy 响应式代理
     // 将原生的二进制 File 对象真实地传递给后端，完美解决 422 报错
-    const res = trajectoryFile.value
-      ? await generateBoreholeImage(
-          toRaw(fileX.value!),
-          toRaw(fileY.value!),
-          toRaw(fileZ.value!),
-          toRaw(trajectoryFile.value)
-        )
-      : await generate3DModel(toRaw(fileX.value!), toRaw(fileY.value!), toRaw(fileZ.value!))
+    const res = await generateResultDat(
+      toRaw(fileX.value!),
+      toRaw(fileY.value!),
+      toRaw(fileZ.value!),
+      trajectoryFile.value ? toRaw(trajectoryFile.value) : null
+    )
 
     if (res.status === 'success') {
       boreholeSceneData = Array.isArray(res.data) ? null : res.data
-      colorMode.value = boreholeSceneData?.meta?.color_thresholds ? 'classified' : 'jet'
-      rawVoxelData = Array.isArray(res.data) ? res.data : res.data.voxels || []
+      colorMode.value =
+        boreholeSceneData?.meta?.color_thresholds || boreholeSceneData?.metadata?.result
+          ? 'classified'
+          : 'jet'
+      resultRows = Array.isArray(res.data) ? res.data : res.data.points || []
+      xSectionRows = Array.isArray(res.data) ? [] : res.data.x_section || []
+      ySectionRows = Array.isArray(res.data) ? [] : res.data.y_section || []
+      rawVoxelData = Array.isArray(res.data) ? res.data : res.data.points || res.data.voxels || []
       hasData.value = true
       await nextTick()
       initThreeJS()
@@ -179,6 +191,27 @@ const start3DImaging = async () => {
   }
 }
 // --- 🌟 关键视觉优化：创建带白色描边的悬浮文字，防止被背景或模型遮挡 ---
+const downloadDat = (filename: string, rows: any[], columnCount: number) => {
+  if (!rows.length) return
+  const text = rows
+    .map((row) =>
+      row
+        .slice(0, columnCount)
+        .map((value: number) => Number(value).toPrecision(8).replace(/\.?0+$/, ''))
+        .join(' ')
+    )
+    .join('\n')
+  const blob = new Blob([text + '\n'], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
 const makeTextSprite = (text: string, color: string, fontSize = 40) => {
   const canvas = document.createElement('canvas')
   canvas.width = 256
@@ -435,7 +468,9 @@ const getJetColor = (value: number, min: number, max: number) => {
 }
 
 const getResistivityColor = (value: number, min: number, max: number, _classCode?: number) => {
-  const thresholds = boreholeSceneData?.meta?.color_thresholds
+  if (_classCode === 1) return new THREE.Color('#2fbf71')
+  if (_classCode === 2) return new THREE.Color('#e54545')
+  const thresholds = boreholeSceneData?.meta?.color_thresholds || boreholeSceneData?.metadata?.result
   if (thresholds) {
     return getGreenYellowRedColor(value, min, max)
   }
@@ -601,9 +636,16 @@ onBeforeUnmount(() => {
   border-top: 1px dashed #dcdfe6;
   display: flex;
   gap: 40px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 .control-item {
   flex: 1;
+}
+.download-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .slider-label {
   font-size: 14px;
